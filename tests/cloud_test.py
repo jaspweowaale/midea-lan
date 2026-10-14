@@ -1,6 +1,7 @@
 """Test cloud."""
 
 import json
+from collections.abc import Callable
 from hashlib import md5
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,7 @@ from midealan.cloud import (
     MideaAirCloud,
     MideaCloud,
     SmartHomeCloud,
+    ToshibaIOLife,
     TSmartLifeCloud,
     _mask_token,
     _redact_data,
@@ -26,6 +28,7 @@ from midealan.cloud import (
     get_preset_account_cloud,
 )
 from midealan.exceptions import CloudAuthError, CloudError, ElementMissing
+from midealan.security import ToshibaIOLifeSecurity
 
 # ``CloudSecurity.get_udp_id(100, method)``. Hard-coded on purpose: deriving them
 # with the same helper the implementation calls would not catch a request that
@@ -34,6 +37,16 @@ UDP_IDS = {
     1: "dec4da86e0aeefadde14a4e553680b9b",
     2: "b2dd199071d527a33c8239833a5bf5fb",
 }
+_TOSHIBA_APP_KEY = SUPPORTED_CLOUDS["Toshiba Iolife"]["app_key"]
+_TOSHIBA_ACCESS_TOKEN = (
+    "bd18a46bb4d681f5142bca381d56924a86aad13f1f9870157f22b7c924ddb431"
+)
+_TOSHIBA_ENCRYPTED_SN = (
+    "e1f17526c18d049e4862e19f5d6cd269"
+    "df9b09edd41d4b2627b35dbb2d47b963"
+    "a433df71998b41d4dc354e9bdf78902a"
+)
+_TOSHIBA_EXPECTED_SN = "0008AC0000000000000000000000BEEF"
 
 
 def _token_requests(session: Mock) -> list[tuple[str, dict]]:
@@ -136,6 +149,10 @@ class CloudTest(IsolatedAsyncioTestCase):
             get_midea_cloud("Ariston Clima", session, "", ""),
             MideaAirCloud,
         )
+        assert isinstance(
+            get_midea_cloud("Toshiba Iolife", session, "", ""),
+            ToshibaIOLife,
+        )
         with pytest.raises(ElementMissing):
             get_midea_cloud("Invalid", session, "", "")
         # TSmartLife is selectable (listed in SUPPORTED_CLOUDS, routes to a
@@ -194,7 +211,7 @@ class CloudTest(IsolatedAsyncioTestCase):
     async def test_get_cloud_servers(self) -> None:
         """Test get cloud servers."""
         servers = await MideaCloud.get_cloud_servers()
-        assert len(servers.items()) == 6
+        assert len(servers.items()) == 7
 
     async def test_midea_cloud_api_request_timeout(self) -> None:
         """Test _api_request retries and returns None on timeout."""
@@ -1589,6 +1606,224 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert device is None
 
 
+@pytest.fixture(name="make_toshiba_cloud")
+def make_toshiba_cloud_fixture() -> Callable[[Mock], ToshibaIOLife]:
+    """Return a factory for ToshibaIOLife clouds on a mocked session."""
+
+    def _make(session: Mock) -> ToshibaIOLife:
+        cloud = get_midea_cloud(
+            "Toshiba Iolife",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert isinstance(cloud, ToshibaIOLife)
+        assert cloud._app_key == _TOSHIBA_APP_KEY
+        assert isinstance(cloud._security, ToshibaIOLifeSecurity)
+        return cloud
+
+    return _make
+
+
+class TestToshibaDecryptSn:
+    """Unit tests for ToshibaIOLife._decrypt_sn."""
+
+    @pytest.mark.parametrize(
+        ("encrypted_sn", "access_token", "expected"),
+        [
+            (_TOSHIBA_ENCRYPTED_SN, _TOSHIBA_ACCESS_TOKEN, _TOSHIBA_EXPECTED_SN),
+            (_TOSHIBA_ENCRYPTED_SN, None, ""),
+            ("", _TOSHIBA_ACCESS_TOKEN, ""),
+        ],
+    )
+    def test_decrypt_sn(
+        self,
+        make_toshiba_cloud: Callable[[Mock], ToshibaIOLife],
+        encrypted_sn: str,
+        access_token: str | None,
+        expected: str,
+    ) -> None:
+        """_decrypt_sn returns correct SN or an empty string."""
+        cloud = make_toshiba_cloud(Mock())
+        cloud._access_token = access_token
+        assert cloud._decrypt_sn(encrypted_sn) == expected
+
+    @pytest.mark.parametrize(
+        ("encrypted_sn", "access_token"),
+        [
+            ("deadbeef" * 4, _TOSHIBA_ACCESS_TOKEN),
+            ("nothexatall", _TOSHIBA_ACCESS_TOKEN),
+            (_TOSHIBA_ENCRYPTED_SN, "nothexatall"),
+        ],
+    )
+    def test_decrypt_sn_hides_security_errors(
+        self,
+        make_toshiba_cloud: Callable[[Mock], ToshibaIOLife],
+        encrypted_sn: str,
+        access_token: str,
+    ) -> None:
+        """_decrypt_sn returns an empty string when security rejects the payload."""
+        cloud = make_toshiba_cloud(Mock())
+        cloud._access_token = access_token
+        assert cloud._decrypt_sn(encrypted_sn) == ""
+
+
+class ToshibaIOLifeTest(IsolatedAsyncioTestCase):
+    """ToshibaIOLife cloud async tests."""
+
+    responses: ClassVar[dict[str, bytes]] = {}
+    make_cloud: Callable[[Mock], ToshibaIOLife]
+
+    def setUp(self) -> None:
+        """Set tests up."""
+        file_path = Path(__file__)
+        for file in Path.iterdir(Path(file_path.parent, "responses")):
+            file_path = Path(file)
+            with file_path.open(
+                encoding="utf-8",
+            ) as f:
+                self.responses[file_path.name] = bytes(f.read(), encoding="utf-8")
+
+    @pytest.fixture(autouse=True)
+    def _inject_cloud_factory(
+        self,
+        make_toshiba_cloud: Callable[[Mock], ToshibaIOLife],
+    ) -> None:
+        """Share the cloud factory with these unittest-style tests."""
+        self.make_cloud = make_toshiba_cloud
+
+    async def test_list_appliances_success(self) -> None:
+        """list_appliances decrypts SN inline and skips virtual devices."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["mideaaircloud_login_id.json"],
+                self.responses["mideaaircloud_login.json"],
+                self.responses["toshibaiolife_list_appliances.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = self.make_cloud(session)
+        assert await cloud.login()
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+
+        appliances = await cloud.list_appliances(None)
+        assert len(appliances) == 1
+
+        dev = appliances[12345678]
+        assert dev["name"] == "Living Room AC"
+        assert dev["type"] == 0xAC
+        assert dev["sn"] == _TOSHIBA_EXPECTED_SN
+        assert dev["sn8"] == "00000000"
+        assert dev["model_number"] == 10
+        assert dev["manufacturer_code"] == "0008"
+        assert dev["model"] == "00000000"
+        assert dev["online"] is True
+
+    async def test_list_appliances_uses_cloud_app_version(self) -> None:
+        """AppVersion comes from the SUPPORTED_CLOUDS entry."""
+        cloud = self.make_cloud(Mock())
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        request = AsyncMock(return_value=[])
+        with patch.object(cloud, "_api_request", new=request):
+            await cloud.list_appliances(None)
+        assert request.await_args is not None
+        assert request.await_args.kwargs["data"]["appVersion"] == "3.4.0"
+
+    async def test_list_appliances_skips_malformed_entries(self) -> None:
+        """Entries with an unusable id or type are skipped."""
+        cloud = self.make_cloud(Mock())
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        good = {
+            "id": "12345678",
+            "type": "0xAC",
+            "name": "Living Room AC",
+            "modelNumber": "10",
+            "onlineStatus": "1",
+        }
+        with patch.object(
+            cloud,
+            "_api_request",
+            new=AsyncMock(
+                return_value=[
+                    {"id": "not-a-number", "type": "0xAC"},
+                    {"id": "1", "type": "not-hex"},
+                    {"type": "0xAC"},
+                    {"id": "2", "type": None},
+                    good,
+                ],
+            ),
+        ):
+            appliances = await cloud.list_appliances(None)
+        assert list(appliances) == [12345678]
+
+    async def test_list_appliances_non_numeric_model_number(self) -> None:
+        """A non-numeric modelNumber falls back to 0."""
+        cloud = self.make_cloud(Mock())
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        with patch.object(
+            cloud,
+            "_api_request",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": "12345678",
+                        "type": "0xAC",
+                        "name": "Living Room AC",
+                        "modelNumber": "RAS-X221DZ",
+                        "onlineStatus": "1",
+                    },
+                ],
+            ),
+        ):
+            appliances = await cloud.list_appliances(None)
+        assert appliances[12345678]["model_number"] == 0
+
+    async def test_list_appliances_api_failure(self) -> None:
+        """list_appliances returns an empty dict on API failure."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            return_value=self.responses["mideaaircloud_invalid_response.json"],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = self.make_cloud(session)
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        assert await cloud.list_appliances(None) == {}
+
+    async def test_list_appliances_non_list_response(self) -> None:
+        """list_appliances returns an empty dict for a non-list response."""
+        cloud = self.make_cloud(Mock())
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        with patch.object(
+            cloud,
+            "_api_request",
+            new=AsyncMock(return_value={"result": []}),
+        ):
+            assert await cloud.list_appliances(None) == {}
+
+    async def test_list_appliances_skips_non_mapping_entries(self) -> None:
+        """list_appliances silently skips non-mapping entries in the list."""
+        entry = {
+            "id": "12345678",
+            "type": "0xAC",
+            "name": "Living Room AC",
+            "modelNumber": 10,
+            "onlineStatus": "1",
+            "sn": _TOSHIBA_ENCRYPTED_SN,
+        }
+        cloud = self.make_cloud(Mock())
+        cloud._access_token = _TOSHIBA_ACCESS_TOKEN
+        with patch.object(
+            cloud,
+            "_api_request",
+            new=AsyncMock(return_value=["not-a-mapping", entry]),
+        ):
+            appliances = await cloud.list_appliances(None)
+        assert len(appliances) == 1
+
+
 class DayReportTest(IsolatedAsyncioTestCase):
     """Day report test case."""
 
@@ -1931,4 +2166,94 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
         result = await cloud.get_cloud_keys(100)
         assert result == {
             1: {"token": "method1_return_token1", "key": "method1_return_key1"},
+        }
+
+    def test_login_is_inherited_unmodified_from_smarthome(self) -> None:
+        """TSmartLifeCloud does not override login().
+
+        A full mocked login() round trip is deliberately not attempted
+        here -- see test_request_construction_targets_confirmed_endpoint's
+        own docstring above for why (the shared login fixture's ciphertext
+        is tied to SmartHome's real app_key). This identity check is the
+        right-sized alternative: it is a genuine regression guard (it
+        would fail immediately if a future edit ever added a TSmartLife-
+        specific login() override) without claiming a fixture-based
+        round trip this project's own rules don't allow it to construct
+        honestly. Login itself IS separately confirmed live-working: see
+        https://github.com/jaspweowaale/toshiba-tsmartlife-local, which
+        calls this exact inherited method against the real TSmartLife
+        cloud with real (not published here) app credentials.
+        """
+        assert TSmartLifeCloud.login is SmartHomeCloud.login
+
+    async def test_list_appliances_uses_inherited_smarthome_implementation(
+        self,
+    ) -> None:
+        """TSmartLifeCloud.list_appliances reuses SmartHomeCloud's method.
+
+        Patches _api_request directly with an inline, blank-SN appliance
+        payload -- shaped exactly like _api_request's real already-
+        unwrapped return value, not a raw HTTP envelope. SmartHomeCloud's
+        list_appliances() calls self._security.aes_decrypt() on each
+        appliance's sn field, which requires AES session keys that only
+        get set during a completed login() -- and this test deliberately
+        skips login() for the same reason the other tests above do (no
+        real TSmartLife app_key to complete that round trip honestly).
+        aes_decrypt() short-circuits to "" for zero-length input before
+        touching any key material (see midealan/security.py), so a
+        blank-SN payload exercises the real parsing/field-mapping code
+        path without needing login() first -- the same "right-sized
+        slice" approach already used for _re_route()/get_cloud_keys()
+        above. Appliance discovery itself IS separately confirmed
+        live-working: see
+        https://github.com/jaspweowaale/toshiba-tsmartlife-local.
+        """
+        SUPPORTED_CLOUDS["TSmartLife"].update(
+            {
+                "app_id": "test_only_app_id_not_real",
+                "app_key": "test_only_app_key_not_real",
+                "iot_key": "test_only_iot_key_not_real",
+                "hmac_key": "test_only_hmac_key_not_real",
+            },
+        )
+        cloud = get_midea_cloud(
+            "TSmartLife",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        assert isinstance(cloud, SmartHomeCloud)
+
+        fake_response = {
+            "list": [
+                {
+                    "modelNumber": "310A079W",
+                    "name": "Test Appliance (blank SN, no AES session key needed)",
+                    "type": "0xCA",
+                    "sn": "",
+                    "enterpriseCode": "0008",
+                    "onlineStatus": "1",
+                    "id": "1",
+                },
+            ],
+        }
+
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value=fake_response),
+        ):
+            appliances = await cloud.list_appliances(home_id=None)
+
+        assert appliances == {
+            1: {
+                "name": "Test Appliance (blank SN, no AES session key needed)",
+                "type": 0xCA,
+                "sn": "",
+                "sn8": "",
+                "model_number": 0,
+                "manufacturer_code": "0008",
+                "model": "",
+                "online": True,
+            },
         }

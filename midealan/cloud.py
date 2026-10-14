@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from asyncio import Lock
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -22,6 +23,7 @@ from .security import (
     MeijuCloudSecurity,
     MideaAirSecurity,
     MSmartCloudSecurity,
+    ToshibaIOLifeSecurity,
 )
 
 SN8_MIN_SERIAL_LENGTH = 17
@@ -82,13 +84,13 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         "app_key": "434a209a5ce141c3b726de067835d7f0",
         "api_url": "https://mapp.appsmb.com",  # codespell:ignore
     },
-    # WORK IN PROGRESS -- see https://github.com/wuwentao/midea_ac_lan/issues/364
     # TSmartLife (Toshiba's "oversea"/non-Japan-domestic market app,
     # com.midea.ai.toshiba.oversea.inhouse) for the GR-RF900WI-PMV(06)-MG
     # refrigerator (device type 0xCA). Confirmed a separate cloud
-    # deployment from Toshiba's other app, IOLife -- two unrelated
-    # TSmartLife accounts were both rejected with code 3102 when pointed
-    # at IOLife's endpoint; see home-assistant/core#182840.
+    # deployment from Toshiba's other app, IOLife (see "Toshiba Iolife"
+    # entry below) -- two unrelated TSmartLife accounts were both
+    # rejected with code 3102 when pointed at IOLife's endpoint; see
+    # home-assistant/core#182840.
     #
     # api_url is REAL, confirmed via three independent methods on
     # 2026-10-10: (1) a literal string match in the TSmartLife APK's
@@ -99,12 +101,22 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
     # exactly -- hence class_name below reuses SmartHomeCloud's flow via a
     # thin subclass.
     #
-    # app_id/app_key/iot_key/hmac_key are UNKNOWN and intentionally left
-    # blank. TSmartLife's APK is KiwiVM-shielded; static analysis cannot
-    # reach them (confirmed, not assumed). Do NOT fill these with another
-    # cloud's real values -- that would silently test the wrong backend.
-    # TSmartLifeCloud.__init__ below refuses to construct while they are
-    # blank, specifically to prevent that mistake.
+    # app_id/app_key/iot_key/hmac_key are intentionally left blank HERE.
+    # They are not unknown: a companion investigation (dynamic APK
+    # analysis using a disposable test account, documented in issue #364)
+    # recovered working values and confirmed -- against a real production
+    # Toshiba GR-RF900WI-PMV(06)-MG fridge -- that this exact class,
+    # unmodified, successfully authenticates, discovers the appliance,
+    # and returns a LAN V3 token/key pair that midea_ac_lan uses for live
+    # local control. Those 4 recovered values are deliberately NOT
+    # included in this PR (see this project's credential-handling
+    # policy); they are published separately, by explicit owner
+    # authorization, at
+    # https://github.com/jaspweowaale/toshiba-tsmartlife-local. Do NOT
+    # fill these with another cloud's real values -- that would silently
+    # test the wrong backend. TSmartLifeCloud.__init__ below refuses to
+    # construct while they are blank, specifically to prevent that
+    # mistake for anyone who clones this PR branch directly.
     "TSmartLife": {
         "class_name": "TSmartLifeCloud",
         "app_id": "",
@@ -115,6 +127,17 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         # 0008 is Toshiba's manufacturer/enterprise code (shipped in-app
         # as APP_ENTERPRISE, prefixes every T_0008_* Lua protocol file --
         # this device's family: T_0008_CA_{21,22,24,25,27,28,29}.lua).
+        "manufacturer_code": "0008",
+    },
+    "Toshiba Iolife": {
+        "class_name": "ToshibaIOLife",
+        "app_id": "1203",
+        "app_key": "09c4d09f0da1513bb62dc7b6b0af9c11",
+        "api_url": "https://app.iolife.toshiba-lifestyle.com",
+        "app_version": "3.4.0",
+        # The API does not return an enterpriseCode, so this is the fallback.
+        # 0x0008 is Toshiba's code: the app ships it as APP_ENTERPRISE
+        # and it prefixes every T_0008_* protocol file.
         "manufacturer_code": "0008",
     },
 }
@@ -1084,12 +1107,13 @@ class MideaAirCloud(MideaCloud):
         session: ClientSession,
         account: str,
         password: str,
+        security: CloudSecurity | None = None,
     ) -> None:
         """Initialize Midea Air Cloud."""
         cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
         super().__init__(
             session=session,
-            security=MideaAirSecurity(login_key=cloud_data["app_key"]),
+            security=security or MideaAirSecurity(login_key=cloud_data["app_key"]),
             app_id=cloud_data["app_id"],
             app_key=cloud_data["app_key"],
             account=account,
@@ -1281,7 +1305,7 @@ class MideaAirCloud(MideaCloud):
 
 
 class TSmartLifeCloud(SmartHomeCloud):
-    """TSmartLife cloud (Toshiba oversea-market app) -- WORK IN PROGRESS.
+    """TSmartLife cloud (Toshiba oversea-market app).
 
     See https://github.com/wuwentao/midea_ac_lan/issues/364 for the full
     investigation. Reuses SmartHomeCloud's login/getToken flow unchanged --
@@ -1290,12 +1314,25 @@ class TSmartLifeCloud(SmartHomeCloud):
     confirmed any v1/v2 getToken variant is acceptable; the only goal is a
     working LAN V3 token for device type 0xCA.
 
-    The real app_id/app_key/iot_key/hmac_key have not been recovered (see
-    the issue above) and are intentionally blank in SUPPORTED_CLOUDS. This
-    class refuses to construct while they are blank, so an accidental
-    selection of "TSmartLife" in the config flow fails immediately with a
-    clear message instead of attempting a doomed login with empty
-    credentials.
+    Live-verified, not just structurally plausible: with the real (but
+    deliberately unpublished-here) app_id/app_key/iot_key/hmac_key
+    supplied at runtime, this exact unmodified class has successfully
+    logged in, listed appliances, and retrieved a working LAN V3
+    token/key for a real production Toshiba GR-RF900WI-PMV(06)-MG fridge
+    -- see https://github.com/jaspweowaale/toshiba-tsmartlife-local for
+    the companion tool that does this and the full verification write-up.
+    download_lua/download_plugin are inherited unmodified too but have
+    NOT been live-verified against the real TSmartLife cloud (only
+    against mocked responses, see tests/cloud_test.py) -- a separate,
+    narrower, still-open gap, distinct from login/list_appliances/
+    get_cloud_keys above.
+
+    SUPPORTED_CLOUDS["TSmartLife"]'s app_id/app_key/iot_key/hmac_key are
+    intentionally blank in this PR (see that entry's own comment for why,
+    and where the real values are published). This class refuses to
+    construct while they are blank, so an accidental selection of
+    "TSmartLife" in the config flow fails immediately with a clear
+    message instead of attempting a doomed login with empty credentials.
     """
 
     def __init__(
@@ -1320,6 +1357,150 @@ class TSmartLifeCloud(SmartHomeCloud):
             account=account,
             password=password,
         )
+
+    async def get_cloud_keys(self, appliance_id: int) -> dict[int, dict[str, Any]]:
+        """Get keys for device, trying the v2 endpoint before falling back to v1.
+
+        Found both `/v1/iot/secure/getToken` and `/v2/iot/secure/getToken`
+        as literal strings in the real TSmartLife APK, plus named
+        constants for both (`URL_IOT_SECURE_GET_TOKEN`/`_V2`) -- with no
+        confirmed call-site evidence for either. This class's own
+        docstring already states any v1/v2 variant is acceptable, so this
+        tries v2 first (matching the native `{"applianceCodes": [`
+        list-form template found in the app's protection SDK) and falls
+        back to the inherited v1 implementation when v2 yields nothing --
+        the same safety-net shape as MeijuCloud.get_cloud_keys(), minus
+        the `homegroupId` field: TSmartLife's real list-home endpoint is
+        unconfirmed (SmartHomeCloud never overrides the inherited
+        MideaCloud.list_home() static placeholder), so sending a
+        homegroupId derived from it would be unverified invention, not a
+        justified fix. (The real device that live-verified login/
+        list_appliances/get_cloud_keys above used the v1 path, inherited
+        unmodified -- this v2-first override is a defensive completeness
+        addition for any TSmartLife deployment whose backend might only
+        answer v2, not something the live verification itself exercised.)
+        """
+        result: dict[int, dict[str, Any]] = {}
+        for method in [1, 2]:
+            udp_id = self._security.get_udp_id(appliance_id, method)
+            data = self._make_general_data()
+            data.update({"udpid": udp_id, "applianceCodes": [str(appliance_id)]})
+            response = await self._api_request(
+                endpoint="/v2/iot/secure/getToken",
+                data=data,
+            )
+            # Log only the entry count: the payload carries token/key material.
+            tokens = (response or {}).get("tokenlist") or []
+            _LOGGER.debug(
+                "get_cloud_keys() v2 for appliance_id %s with method %s "
+                "returned %s token entries",
+                appliance_id,
+                method,
+                len(tokens),
+            )
+            for token in tokens:
+                if token["udpId"] == udp_id:
+                    result[method] = {
+                        "token": token["token"].lower(),
+                        "key": token["key"].lower(),
+                    }
+        if not result:
+            _LOGGER.debug(
+                "v2 getToken returned no keys for appliance_id %s, "
+                "falling back to the v1 endpoint",
+                appliance_id,
+            )
+            return await super().get_cloud_keys(appliance_id)
+        return result
+
+
+class ToshibaIOLife(MideaAirCloud):
+    """Toshiba IOLife cloud."""
+
+    def __init__(
+        self,
+        cloud_name: str,
+        session: ClientSession,
+        account: str,
+        password: str,
+    ) -> None:
+        """Initialize Toshiba IOLife cloud."""
+        cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
+        super().__init__(
+            cloud_name=cloud_name,
+            session=session,
+            account=account,
+            password=password,
+            security=ToshibaIOLifeSecurity(cloud_data["app_key"]),
+        )
+        self._app_version: str = cloud_data["app_version"]
+        self._manufacturer_code: str = cloud_data["manufacturer_code"]
+
+    def _decrypt_sn(self, encrypted_sn: str) -> str:
+        """Decrypt SN blob from home/page/list/info."""
+        if not self._access_token or not encrypted_sn:
+            return ""
+        try:
+            return cast("ToshibaIOLifeSecurity", self._security).decrypt_appliance_sn(
+                encrypted_sn,
+                self._access_token,
+            )
+        except (ValueError, UnicodeDecodeError):
+            _LOGGER.debug("Failed to decrypt appliance SN")
+            return ""
+
+    async def list_appliances(
+        self,
+        home_id: str | None = None,  # noqa: ARG002
+    ) -> dict[int, dict[str, Any]]:
+        """Get Toshiba IOLife devices."""
+        data = self._make_general_data()
+        data["appVersion"] = self._app_version
+        # home/page/list/info returns result as a bare list, not {list: [...]}
+        page_list: Any = await self._api_request(
+            endpoint="/v1/appliance/user/home/page/list/info",
+            data=data,
+        )
+        if not isinstance(page_list, list):
+            return {}
+
+        appliances: dict[int, dict[str, Any]] = {}
+        for appliance in page_list:
+            if not isinstance(appliance, Mapping):
+                continue
+            # Skip virtual/batch devices.
+            if (
+                appliance.get("type") == "0x_BATCH_AC"
+                or appliance.get("id") == "virtual_ag_0xAC"
+            ):
+                continue
+            try:
+                device_id = int(appliance["id"])
+                device_type = int(appliance["type"], 16)
+            except (KeyError, TypeError, ValueError):
+                _LOGGER.debug("Skipping malformed appliance entry: %s", appliance)
+                continue
+            try:
+                model_number = int(appliance.get("modelNumber", 0))
+            except (TypeError, ValueError):
+                model_number = 0
+            sn = self._decrypt_sn(str(appliance.get("sn") or ""))
+            sn8 = sn[9:17] if len(sn) > SN8_MIN_SERIAL_LENGTH else ""
+            appliances[device_id] = {
+                "name": appliance.get("name"),
+                "type": device_type,
+                "sn": sn,
+                "sn8": sn8,
+                "model_number": model_number,
+                "manufacturer_code": appliance.get(
+                    "enterpriseCode",
+                    self._manufacturer_code,
+                ),
+                "model": sn8,
+                "online": appliance.get("onlineStatus") == "1",
+            }
+
+        return appliances
 
 
 def get_midea_cloud(
