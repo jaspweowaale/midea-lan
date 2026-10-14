@@ -1981,34 +1981,63 @@ class DayReportTest(IsolatedAsyncioTestCase):
             await cloud.get_day_report(100)
 
 
+# Snapshotted once, at module import, before any test (in this file or
+# any other) can mutate SUPPORTED_CLOUDS["TSmartLife"]. TestTSmartLifeCloud's
+# setUp/tearDown below always reset to this fixed baseline rather than
+# re-snapshotting whatever happens to be live -- fixes a real
+# test-order-dependency CodeRabbit's 2026-10-14 review on PR #198 found
+# (reproduced: running tests/tsmartlife_auth_harness_test.py before this
+# file made test_endpoint_configuration_matches_confirmed_evidence fail,
+# because the old per-setUp snapshot picked up that file's leftover
+# synthetic values as if they were "the real entry").
+_TSMARTLIFE_REAL_ENTRY = dict(SUPPORTED_CLOUDS["TSmartLife"])
+
+
 class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
     """Test TSmartLifeCloud -- draft provider, see issue #364.
 
-    These tests never contact a real server: the one test that performs a
-    "login" and "get_cloud_keys" round trip injects local, clearly-fake
-    placeholder credentials (via monkeypatching the module-level
-    SUPPORTED_CLOUDS entry for the duration of a single test, restored in
-    tearDown) purely to exercise TSmartLifeCloud's inherited
+    These tests never contact a real server: several tests temporarily
+    override the module-level SUPPORTED_CLOUDS entry with clearly-fake
+    placeholder credentials, always reset to the fixed, real baseline
+    snapshotted at module import (_TSMARTLIFE_REAL_ENTRY above) in both
+    setUp and tearDown -- regardless of what any other test file leaves
+    behind -- purely to exercise TSmartLifeCloud's inherited
     SmartHomeCloud request/response code paths against mocked HTTP
-    responses -- exactly as every other cloud class in this file is tested.
-    No real TSmartLife app_id/app_key is known or used anywhere here.
+    responses, exactly as every other cloud class in this file is
+    tested. The real app_id/app_key ARE known and used by default (see
+    SUPPORTED_CLOUDS["TSmartLife"] itself) -- only per-user account
+    credentials and per-device LAN tokens are never used here.
     """
 
     responses: ClassVar[dict[str, bytes]] = {}
 
     def setUp(self) -> None:
-        """Load response fixtures and save the real (blank) TSmartLife entry."""
+        """Load response fixtures and reset to the fixed, known-good baseline.
+
+        Resets SUPPORTED_CLOUDS["TSmartLife"] to _TSMARTLIFE_REAL_ENTRY
+        before every test, not just in tearDown -- so even if an earlier
+        test (in this file or another) left the global entry mutated,
+        this test still starts from the true original, not whatever was
+        live when setUp happened to run.
+        """
         file_path = Path(__file__)
         for file in Path.iterdir(Path(file_path.parent, "responses")):
             file_path = Path(file)
             with file_path.open(encoding="utf-8") as f:
                 self.responses[file_path.name] = bytes(f.read(), encoding="utf-8")
-        self._real_entry = dict(SUPPORTED_CLOUDS["TSmartLife"])
+        SUPPORTED_CLOUDS["TSmartLife"].clear()
+        SUPPORTED_CLOUDS["TSmartLife"].update(_TSMARTLIFE_REAL_ENTRY)
 
     def tearDown(self) -> None:
-        """Restore the real (blank-credential) TSmartLife entry."""
+        """Restore the fixed, known-good baseline again after this test.
+
+        Defense in depth alongside setUp's reset above: covers any
+        inspection of global state that might happen between this test
+        and the next (e.g. a differently-ordered or parallel test
+        runner), not just this file's own next setUp call.
+        """
         SUPPORTED_CLOUDS["TSmartLife"].clear()
-        SUPPORTED_CLOUDS["TSmartLife"].update(self._real_entry)
+        SUPPORTED_CLOUDS["TSmartLife"].update(_TSMARTLIFE_REAL_ENTRY)
 
     def test_endpoint_configuration_matches_confirmed_evidence(self) -> None:
         """SUPPORTED_CLOUDS["TSmartLife"] matches the confirmed findings.

@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 from typing import ClassVar
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from midealan.cloud import SUPPORTED_CLOUDS, TSmartLifeCloud, get_midea_cloud
 
@@ -68,7 +68,21 @@ class TestTSmartLifeAuthHarness(IsolatedAsyncioTestCase):
                 self.responses[file_path.name] = bytes(f.read(), encoding="utf-8")
 
     def _make_cloud(self) -> tuple[Mock, TSmartLifeCloud]:
-        SUPPORTED_CLOUDS["TSmartLife"].update(SYNTHETIC_CREDENTIALS)
+        """Build a TSmartLifeCloud with synthetic credentials.
+
+        Uses patch.dict (started here, stopped via addCleanup) rather
+        than a plain .update() so the global SUPPORTED_CLOUDS entry is
+        always restored after this test -- regardless of pass/fail,
+        and regardless of what order tests across files run in. Fixes
+        a real test-isolation gap found by CodeRabbit's 2026-10-14
+        review on PR #198: the previous plain .update() never restored
+        the entry, which could make tests/cloud_test.py's
+        TestTSmartLifeCloud snapshot/restore these synthetic values
+        instead of the real ones if this file's tests ran first.
+        """
+        patcher = patch.dict(SUPPORTED_CLOUDS["TSmartLife"], SYNTHETIC_CREDENTIALS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         session = Mock()
         cloud = get_midea_cloud(
             "TSmartLife",
