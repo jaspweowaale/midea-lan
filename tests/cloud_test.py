@@ -155,11 +155,10 @@ class CloudTest(IsolatedAsyncioTestCase):
         )
         with pytest.raises(ElementMissing):
             get_midea_cloud("Invalid", session, "", "")
-        # TSmartLife is selectable (listed in SUPPORTED_CLOUDS, routes to a
-        # real class) but refuses to construct while its credentials are
-        # blank -- see TSmartLifeCloud.__init__.
-        with pytest.raises(ElementMissing, match="TSmartLife cloud credentials"):
-            get_midea_cloud("TSmartLife", session, "account", "password")
+        assert isinstance(
+            get_midea_cloud("TSmartLife", session, "account", "password"),
+            TSmartLifeCloud,
+        )
 
     async def test_get_default_cloud(self) -> None:
         """Test get default cloud name."""
@@ -2012,11 +2011,15 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
         SUPPORTED_CLOUDS["TSmartLife"].update(self._real_entry)
 
     def test_endpoint_configuration_matches_confirmed_evidence(self) -> None:
-        """SUPPORTED_CLOUDS["TSmartLife"] matches the 2026-10-10 findings.
+        """SUPPORTED_CLOUDS["TSmartLife"] matches the confirmed findings.
 
-        Pins the exact confirmed api_url and manufacturer_code so a future
-        edit cannot silently drift from the evidence recorded in issue #364
-        without this test failing.
+        Pins the exact confirmed api_url, manufacturer_code, and the 4
+        published app-level constants so a future edit cannot silently
+        drift from the evidence recorded in issue #364 / published at
+        jaspweowaale/toshiba-tsmartlife-local without this test failing.
+        These 4 values are shared app-level constants, not personal
+        account or per-device secrets -- see that repo's
+        docs/APP_CREDENTIAL_SECURITY.md for the full classification.
         """
         entry = SUPPORTED_CLOUDS["TSmartLife"]
         assert entry["class_name"] == "TSmartLifeCloud"
@@ -2024,14 +2027,21 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             entry["api_url"] == "https://mp-jp-prod.appsmb.com/mas/v5/app/proxy?alias="
         )
         assert entry["manufacturer_code"] == "0008"
-        # Unknown credentials must stay blank, not silently filled in.
-        assert entry["app_id"] == ""
-        assert entry["app_key"] == ""
-        assert entry["iot_key"] == ""
-        assert entry["hmac_key"] == ""
+        assert entry["app_id"] == "1020"
+        assert entry["app_key"] == "d1ba2a7513bef7bbcd58478b678ff655"
+        assert entry["iot_key"] == "meicloud"
+        assert entry["hmac_key"] == "PROD_VnoClJI9aikS8dyy"
 
     def test_construction_refuses_without_app_id(self) -> None:
-        """Refuses to construct when app_id is blank (the real state today)."""
+        """Refuses to construct when app_id is blank.
+
+        SUPPORTED_CLOUDS["TSmartLife"] now holds real, non-blank values
+        by default, so this explicitly blanks app_id first -- the guard
+        itself is unchanged, this just confirms it still fires correctly
+        for any future fork/variant that lacks a value, not just the
+        pre-publication state this test originally targeted.
+        """
+        SUPPORTED_CLOUDS["TSmartLife"]["app_id"] = ""
         session = Mock()
         with pytest.raises(ElementMissing, match="TSmartLife cloud credentials"):
             TSmartLifeCloud(
@@ -2042,8 +2052,9 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             )
 
     def test_construction_refuses_without_app_key(self) -> None:
-        """Refuses to construct when app_id is set but app_key is still blank."""
+        """Refuses to construct when app_id is set but app_key is blank."""
         SUPPORTED_CLOUDS["TSmartLife"]["app_id"] = "test_only_not_real"
+        SUPPORTED_CLOUDS["TSmartLife"]["app_key"] = ""
         session = Mock()
         with pytest.raises(ElementMissing, match="TSmartLife cloud credentials"):
             TSmartLifeCloud(

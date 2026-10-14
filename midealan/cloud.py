@@ -101,28 +101,28 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
     # exactly -- hence class_name below reuses SmartHomeCloud's flow via a
     # thin subclass.
     #
-    # app_id/app_key/iot_key/hmac_key are intentionally left blank HERE.
-    # They are not unknown: a companion investigation (dynamic APK
-    # analysis using a disposable test account, documented in issue #364)
-    # recovered working values and confirmed -- against a real production
-    # Toshiba GR-RF900WI-PMV(06)-MG fridge -- that this exact class,
-    # unmodified, successfully authenticates, discovers the appliance,
-    # and returns a LAN V3 token/key pair that midea_ac_lan uses for live
-    # local control. Those 4 recovered values are deliberately NOT
-    # included in this PR (see this project's credential-handling
-    # policy); they are published separately, by explicit owner
-    # authorization, at
-    # https://github.com/jaspweowaale/toshiba-tsmartlife-local. Do NOT
-    # fill these with another cloud's real values -- that would silently
-    # test the wrong backend. TSmartLifeCloud.__init__ below refuses to
-    # construct while they are blank, specifically to prevent that
-    # mistake for anyone who clones this PR branch directly.
+    # app_id/app_key/iot_key/hmac_key below are the 4 shared, app-level
+    # constants every copy of the TSmartLife "oversea" app ships with --
+    # NOT personal account credentials, NOT a specific user's login, and
+    # NOT any individual appliance's LAN token/key (those remain
+    # per-user/per-device and are never published anywhere). Confirmed,
+    # against a real production Toshiba GR-RF900WI-PMV(06)-MG fridge,
+    # that this exact class, unmodified, successfully authenticates,
+    # discovers the appliance, and returns a LAN V3 token/key pair that
+    # midea_ac_lan uses for live local control (see issue #364 for the
+    # full investigation). These 4 values are taken directly from the
+    # maintainer-approved published default at
+    # https://github.com/jaspweowaale/toshiba-tsmartlife-local/blob/main/src/toshiba_tsmartlife_local/vietnam_defaults.py
+    # -- see that repo's docs/APP_CREDENTIAL_SECURITY.md for the full
+    # classification/risk analysis behind publishing them. Direct
+    # precedent: SUPPORTED_CLOUDS above already publishes 5 other
+    # clouds' equivalent 4 constants in plaintext the same way.
     "TSmartLife": {
         "class_name": "TSmartLifeCloud",
-        "app_id": "",
-        "app_key": "",
-        "iot_key": "",
-        "hmac_key": "",
+        "app_id": "1020",
+        "app_key": "d1ba2a7513bef7bbcd58478b678ff655",
+        "iot_key": "meicloud",
+        "hmac_key": "PROD_VnoClJI9aikS8dyy",
         "api_url": "https://mp-jp-prod.appsmb.com/mas/v5/app/proxy?alias=",
         # 0008 is Toshiba's manufacturer/enterprise code (shipped in-app
         # as APP_ENTERPRISE, prefixes every T_0008_* Lua protocol file --
@@ -1314,25 +1314,25 @@ class TSmartLifeCloud(SmartHomeCloud):
     confirmed any v1/v2 getToken variant is acceptable; the only goal is a
     working LAN V3 token for device type 0xCA.
 
-    Live-verified, not just structurally plausible: with the real (but
-    deliberately unpublished-here) app_id/app_key/iot_key/hmac_key
-    supplied at runtime, this exact unmodified class has successfully
-    logged in, listed appliances, and retrieved a working LAN V3
-    token/key for a real production Toshiba GR-RF900WI-PMV(06)-MG fridge
-    -- see https://github.com/jaspweowaale/toshiba-tsmartlife-local for
-    the companion tool that does this and the full verification write-up.
-    download_lua/download_plugin are inherited unmodified too but have
-    NOT been live-verified against the real TSmartLife cloud (only
-    against mocked responses, see tests/cloud_test.py) -- a separate,
-    narrower, still-open gap, distinct from login/list_appliances/
-    get_cloud_keys above.
+    Live-verified, not just structurally plausible: with these exact
+    app_id/app_key/iot_key/hmac_key values, this unmodified class has
+    successfully logged in, listed appliances, and retrieved a working
+    LAN V3 token/key for a real production Toshiba GR-RF900WI-PMV(06)-MG
+    fridge -- see https://github.com/jaspweowaale/toshiba-tsmartlife-local
+    for the companion tool that does this and the full verification
+    write-up. download_lua/download_plugin are inherited unmodified too
+    but have NOT been live-verified against the real TSmartLife cloud
+    (only against mocked responses, see tests/cloud_test.py) -- a
+    separate, narrower, still-open gap, distinct from login/
+    list_appliances/get_cloud_keys above.
 
     SUPPORTED_CLOUDS["TSmartLife"]'s app_id/app_key/iot_key/hmac_key are
-    intentionally blank in this PR (see that entry's own comment for why,
-    and where the real values are published). This class refuses to
-    construct while they are blank, so an accidental selection of
-    "TSmartLife" in the config flow fails immediately with a clear
-    message instead of attempting a doomed login with empty credentials.
+    the real, published, shared app-level constants (see that entry's
+    own comment for the classification and source). The __init__ guard
+    below still refuses to construct if they were ever blanked out again
+    (e.g. a fork for a different app variant), so an incomplete
+    "TSmartLife" config fails immediately with a clear message instead
+    of attempting a doomed login with empty credentials.
     """
 
     def __init__(
