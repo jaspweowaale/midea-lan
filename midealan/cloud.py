@@ -1020,7 +1020,7 @@ class SmartHomeCloud(MideaCloud):
                     sn.encode("ascii"),
                 ).hex(),
                 "version": "0",
-                "encryptedType ": "2",
+                "encryptedType": "2",
             },
         )
         if model_number is not None:

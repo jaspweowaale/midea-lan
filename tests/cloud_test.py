@@ -1092,6 +1092,42 @@ class CloudTest(IsolatedAsyncioTestCase):
             with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
                 assert await cloud.download_lua(tmpdir, 10, "00000000") is None
 
+    async def test_smarthomecloud_download_lua_request_key_spelling(self) -> None:
+        """Regression test for a confirmed live-cloud bug.
+
+        SmartHomeCloud's download_lua() request previously sent
+        "encryptedType " (trailing space) instead of "encryptedType",
+        which the real TSmartLife/SmartHome backend rejects with code 1101
+        ("Invalid param wrong format: sn length < 17") -- confirmed against
+        a real device and account. This locks the key spelling so the
+        regression can't reappear silently.
+        """
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value=None),
+            ) as mock_api_request,
+        ):
+            assert (
+                await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+                is None
+            )
+
+        mock_api_request.assert_awaited_once()
+        sent_data = mock_api_request.await_args.kwargs["data"]
+        assert sent_data["encryptedType"] == "2"
+        assert "encryptedType " not in sent_data
+
     async def test_msmartcloud_download_lua_empty_payload(self) -> None:
         """Test MSmartCloud download_lua with an empty payload."""
         session = Mock()
