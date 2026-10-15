@@ -16,6 +16,7 @@ test mocks aiohttp.ClientSession.request.
 """
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
 from unittest import IsolatedAsyncioTestCase
@@ -322,6 +323,49 @@ class TestTSmartLifeAuthHarness(IsolatedAsyncioTestCase):
         v1 = [u for u, _ in requests if u.endswith("/v1/iot/secure/getToken")]
         assert len(v2) == 2, "v2 must be tried for both UDP-ID methods first"
         assert len(v1) == 2, "v1 fallback must still run for both methods"
+
+    async def test_stage4_v1_fallback_handles_malformed_v2_responses(self) -> None:
+        """Malformed v2 responses must not prevent the v1 fallback."""
+        malformed_responses = (
+            b"{}",
+            b"[]",
+            b'{"code": "not-an-integer"}',
+        )
+        for malformed_response in malformed_responses:
+            with self.subTest(malformed_response=malformed_response):
+                session, cloud = self._make_cloud()
+                v1_responses = iter(
+                    [
+                        self.responses["meijucloud_get_keys1.json"],
+                        self.responses["meijucloud_get_keys2.json"],
+                    ],
+                )
+
+                def _respond(
+                    _method: str,
+                    url: str,
+                    _malformed_response: bytes = malformed_response,
+                    _v1_responses: Iterator[bytes] = v1_responses,
+                    **_kwargs: object,
+                ) -> Mock:
+                    r = Mock()
+                    if url.endswith("/v2/iot/secure/getToken"):
+                        r.read = AsyncMock(return_value=_malformed_response)
+                    else:
+                        r.read = AsyncMock(return_value=next(_v1_responses))
+                    return r
+
+                session.request = AsyncMock(side_effect=_respond)
+
+                keys = await cloud.get_cloud_keys(100)
+
+                assert keys[1]["token"] == "method1_return_token1"
+                assert keys[2]["token"] == "method2_return_token2"
+                requests = _token_requests(session)
+                v2 = [u for u, _ in requests if u.endswith("/v2/iot/secure/getToken")]
+                v1 = [u for u, _ in requests if u.endswith("/v1/iot/secure/getToken")]
+                assert len(v2) == 2, "v2 must be tried for both UDP-ID methods first"
+                assert len(v1) == 2, "v1 fallback must still run for both methods"
 
     # ------------------------------------------------------------------
     # Stage 5: LAN V3 handoff shape contract (static only -- no device,

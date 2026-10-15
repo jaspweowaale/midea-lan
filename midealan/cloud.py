@@ -1374,10 +1374,13 @@ class TSmartLifeCloud(SmartHomeCloud):
             udp_id = self._security.get_udp_id(appliance_id, method)
             data = self._make_general_data()
             data.update({"udpid": udp_id, "applianceCodes": [str(appliance_id)]})
-            response = await self._api_request(
-                endpoint="/v2/iot/secure/getToken",
-                data=data,
-            )
+            try:
+                response = await self._api_request(
+                    endpoint="/v2/iot/secure/getToken",
+                    data=data,
+                )
+            except (KeyError, TypeError, ValueError):
+                response = None
             if keys := _parse_token_list(response, udp_id):
                 result[method] = keys
         if not result:
