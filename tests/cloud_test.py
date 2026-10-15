@@ -1119,11 +1119,11 @@ class CloudTest(IsolatedAsyncioTestCase):
             ) as mock_api_request,
         ):
             assert (
-                await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
-                is None
+                await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
             )
 
         mock_api_request.assert_awaited_once()
+        assert mock_api_request.await_args is not None
         sent_data = mock_api_request.await_args.kwargs["data"]
         assert sent_data["encryptedType"] == "2"
         assert "encryptedType " not in sent_data
