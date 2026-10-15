@@ -243,6 +243,23 @@ def _day_report_error(code: object, message: object) -> CloudError:
     return CloudError(text)
 
 
+def _parse_token_list(
+    response: dict[str, Any] | None,
+    udp_id: str | None,
+) -> dict[str, str] | None:
+    """Return the last matching token/key pair without logging credentials."""
+    tokens = (response or {}).get("tokenlist") or []
+    _LOGGER.debug("get_cloud_keys() returned %s token entries", len(tokens))
+    result = None
+    for token in tokens:
+        if token["udpId"] == udp_id:
+            result = {
+                "token": token["token"].lower(),
+                "key": token["key"].lower(),
+            }
+    return result
+
+
 class MideaCloud:
     """Midea Cloud."""
 
@@ -366,22 +383,8 @@ class MideaCloud:
                 endpoint="/v1/iot/secure/getToken",
                 data=data,
             )
-            # Log only the entry count: the payload carries token/key material.
-            tokens = (response or {}).get("tokenlist") or []
-            _LOGGER.debug(
-                "get_cloud_keys() for appliance_id %s with method %s "
-                "returned %s token entries",
-                appliance_id,
-                method,
-                len(tokens),
-            )
-            if tokens:
-                for token in tokens:
-                    if token["udpId"] == udp_id:
-                        result[method] = {
-                            "token": token["token"].lower(),
-                            "key": token["key"].lower(),
-                        }
+            if keys := _parse_token_list(response, udp_id):
+                result[method] = keys
         return result
 
     @staticmethod
@@ -641,22 +644,8 @@ class MeijuCloud(MideaCloud):
                     endpoint="/v2/iot/secure/getToken",
                     data=data,
                 )
-                # Log only the entry count: the payload carries token/key material.
-                tokens = (response or {}).get("tokenlist") or []
-                _LOGGER.debug(
-                    "get_cloud_keys() v2 for appliance_id %s in home %s "
-                    "with method %s returned %s token entries",
-                    appliance_id,
-                    home_id,
-                    method,
-                    len(tokens),
-                )
-                for token in tokens:
-                    if token["udpId"] == udp_id:
-                        result[method] = {
-                            "token": token["token"].lower(),
-                            "key": token["key"].lower(),
-                        }
+                if keys := _parse_token_list(response, udp_id):
+                    result[method] = keys
             if result:
                 break
         if not result:
@@ -1389,21 +1378,8 @@ class TSmartLifeCloud(SmartHomeCloud):
                 endpoint="/v2/iot/secure/getToken",
                 data=data,
             )
-            # Log only the entry count: the payload carries token/key material.
-            tokens = (response or {}).get("tokenlist") or []
-            _LOGGER.debug(
-                "get_cloud_keys() v2 for appliance_id %s with method %s "
-                "returned %s token entries",
-                appliance_id,
-                method,
-                len(tokens),
-            )
-            for token in tokens:
-                if token["udpId"] == udp_id:
-                    result[method] = {
-                        "token": token["token"].lower(),
-                        "key": token["key"].lower(),
-                    }
+            if keys := _parse_token_list(response, udp_id):
+                result[method] = keys
         if not result:
             _LOGGER.debug(
                 "v2 getToken returned no keys for appliance_id %s, "

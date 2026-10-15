@@ -1,7 +1,9 @@
 """Test cloud."""
 
 import json
+import logging
 from collections.abc import Callable
+from copy import deepcopy
 from hashlib import md5
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2154,6 +2156,7 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             account="account",
             password="password",
         )
+        assert isinstance(cloud, TSmartLifeCloud)
         await cloud._re_route()
 
         first_call = session.request.await_args_list[0]
@@ -2297,3 +2300,127 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
                 "online": True,
             },
         }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cloud_name", ["SmartHome", "美的美居", "TSmartLife"])
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        pytest.param(None, {}, id="missing-response"),
+        pytest.param({}, {}, id="missing-token-list"),
+        pytest.param({"tokenlist": None}, {}, id="null-token-list"),
+        pytest.param({"tokenlist": []}, {}, id="empty-token-list"),
+        pytest.param(
+            {
+                "tokenlist": [
+                    {
+                        "udpId": "other-device",
+                        "token": "SYNTHETIC_OTHER_TOKEN",
+                        "key": "SYNTHETIC_OTHER_KEY",
+                    },
+                ],
+            },
+            {},
+            id="unmatched-token",
+        ),
+        pytest.param(
+            {"tokenlist": [{"udpId": UDP_IDS[1].upper()}]},
+            {},
+            id="case-sensitive-udp-id",
+        ),
+        pytest.param(
+            {"tokenlist": [{"udpId": UDP_IDS[1], "token": "", "key": ""}]},
+            {1: {"token": "", "key": ""}},
+            id="empty-credential-strings",
+        ),
+        pytest.param(
+            {
+                "tokenlist": [
+                    {"udpId": "other-device"},
+                    {
+                        "udpId": UDP_IDS[1],
+                        "token": "SYNTHETIC_METHOD1_TOKEN",
+                        "key": "SYNTHETIC_METHOD1_KEY",
+                    },
+                    {
+                        "udpId": UDP_IDS[2],
+                        "token": "SYNTHETIC_METHOD2_TOKEN",
+                        "key": "SYNTHETIC_METHOD2_KEY",
+                    },
+                ],
+            },
+            {
+                1: {
+                    "token": "synthetic_method1_token",
+                    "key": "synthetic_method1_key",
+                },
+                2: {
+                    "token": "synthetic_method2_token",
+                    "key": "synthetic_method2_key",
+                },
+            },
+            id="match-and-lowercase-both-methods",
+        ),
+        pytest.param(
+            {
+                "tokenlist": [
+                    {
+                        "udpId": UDP_IDS[1],
+                        "token": "SYNTHETIC_FIRST_TOKEN",
+                        "key": "SYNTHETIC_FIRST_KEY",
+                    },
+                    {
+                        "udpId": UDP_IDS[1],
+                        "token": "SYNTHETIC_LAST_TOKEN",
+                        "key": "SYNTHETIC_LAST_KEY",
+                    },
+                    {"udpId": "other-device"},
+                ],
+            },
+            {
+                1: {
+                    "token": "synthetic_last_token",
+                    "key": "synthetic_last_key",
+                },
+            },
+            id="last-matching-token-wins",
+        ),
+    ],
+)
+async def test_cloud_key_token_parsing(
+    cloud_name: str,
+    response: dict | None,
+    expected: dict[int, dict[str, str]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep shared parsing and credential-safe logging consistent across clouds."""
+    cloud = get_midea_cloud(
+        cloud_name,
+        session=Mock(),
+        account="account",
+        password="password",
+    )
+    assert cloud is not None
+    original_response = deepcopy(response)
+    with (
+        patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value=response),
+        ) as api_request,
+        patch.object(cloud, "list_home", AsyncMock(return_value={1: "Test home"})),
+        caplog.at_level(logging.DEBUG, logger="midealan.cloud"),
+    ):
+        assert await cloud.get_cloud_keys(100) == expected
+
+    assert response == original_response
+    expected_requests = 2 if expected or cloud_name == "SmartHome" else 4
+    assert api_request.await_count == expected_requests
+    tokens = (response or {}).get("tokenlist") or []
+    assert f"returned {len(tokens)} token entries" in caplog.text
+    for token in tokens:
+        for field in ("token", "key"):
+            if value := token.get(field):
+                assert value not in caplog.text
+                assert value.lower() not in caplog.text
