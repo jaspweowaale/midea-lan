@@ -1020,7 +1020,7 @@ class SmartHomeCloud(MideaCloud):
                     sn.encode("ascii"),
                 ).hex(),
                 "version": "0",
-                "encryptedType ": "2",
+                "encryptedType": "2",
             },
         )
         if model_number is not None:
@@ -1309,7 +1309,7 @@ class TSmartLifeCloud(SmartHomeCloud):
     LAN V3 token/key for a real production Toshiba GR-RF900WI-PMV(06)-MG
     fridge -- see https://github.com/jaspweowaale/toshiba-tsmartlife-local
     for the companion tool that does this and the full verification
-    write-up. download_lua/download_plugin are inherited unmodified too
+    write-up. download_lua/download_plugin are inherited from SmartHomeCloud
     but have NOT been live-verified against the real TSmartLife cloud
     (only against mocked responses, see tests/cloud_test.py) -- a
     separate, narrower, still-open gap, distinct from login/

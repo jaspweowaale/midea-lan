@@ -2304,20 +2304,15 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
     async def test_download_lua_uses_inherited_smarthome_implementation(
         self,
     ) -> None:
-        """TSmartLifeCloud.download_lua reuses SmartHomeCloud's method as-is.
+        """TSmartLifeCloud.download_lua uses SmartHomeCloud's implementation.
 
         Exercises the inherited code path directly via a patched
         `_api_request`/`_session.get` -- no login() call, no real or
-        fixture-derived credentials, sidestepping the known app_key/fixture
-        mismatch documented in test_request_construction_targets_confirmed_
-        endpoint above (download_lua does not need a completed login to be
-        meaningfully exercised). The "encrypted" lua text is produced with
-        the library's own account-independent "fixed key" AES helper, so
-        this fixture is entirely self-consistent and contains no real
-        device/account data. Confirms the maintainer's 2026-10-12 PR #198
-        request (test the lua/plugin download APIs for this cloud) is
-        already structurally satisfied by inheritance alone -- no new
-        production code was needed, only this test coverage.
+        fixture-derived credentials. The "encrypted" lua text is produced
+        with the library's own account-independent "fixed key" AES helper,
+        so this fixture is entirely self-consistent and contains no real
+        device/account data. The mocked API request is checked as well as
+        the decryption and file-writing path.
         """
         SUPPORTED_CLOUDS["TSmartLife"].update(
             {
@@ -2347,17 +2342,18 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
         fake_session.get = AsyncMock(return_value=get_response)
         cloud._session = fake_session
 
+        api_request = AsyncMock(
+            return_value={
+                "url": "https://example.invalid/fake.lua",
+                "fileName": "fake_0xCA.lua",
+            },
+        )
         with (
             TemporaryDirectory() as tmpdir,
             patch.object(
                 cloud,
                 "_api_request",
-                AsyncMock(
-                    return_value={
-                        "url": "https://example.invalid/fake.lua",
-                        "fileName": "fake_0xCA.lua",
-                    },
-                ),
+                api_request,
             ),
         ):
             file = await cloud.download_lua(
@@ -2373,6 +2369,16 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
                 'local bit = require "bit"\n' + fake_lua_source
             )
             Path.unlink(file_path)
+            api_request.assert_awaited_once()
+            request = api_request.await_args
+            assert request is not None
+            assert request.kwargs["endpoint"] == "/v2/luaEncryption/luaGet"
+            request_data = request.kwargs["data"]
+            assert request_data["applianceMFCode"] == "0000"
+            assert request_data["applianceType"] == "0xca"
+            assert request_data["modelNumber"] == "310A079W"
+            assert request_data["encryptedType"] == "2"
+            assert "encryptedType " not in request_data
             fake_session.get.assert_awaited_once_with(
                 "https://example.invalid/fake.lua",
                 timeout=ClientTimeout(10),
